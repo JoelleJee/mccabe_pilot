@@ -1,0 +1,185 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+if (!requireNamespace("tidyverse")) {
+  install.packages("tidyverse")
+}
+
+# Load the package required to read XML files.
+if (!requireNamespace("XML")) {
+  install.packages("XML")
+}
+library(XML)
+library(methods)
+library(tidyverse)
+```
+
+```{r}
+project = '/Users/jjee/Desktop/McCabe_PilotStudy'
+output = file.path(project, 'output_measures')
+```
+
+```{r}
+
+for (atlas in c('cort', 'sub')) {
+  all_data = tibble()
+  
+  # compile each subject's roi table into one
+  for (sub_dir in list.dirs(output, recursive = FALSE)) {
+    subject = basename(sub_dir)
+    sub_data = file.path(sub_dir, paste0(subject, 
+                                         '-HarvardOxfordROI-GluCEST-',
+                                         atlas, '-measures.tsv'))
+    sub_data = read_tsv(sub_data)
+    sub_data$Group = ifelse(startsWith(subject, '1'), 'Non-smoker', 'Smoker')
+    all_data = bind_rows(all_data, sub_data)
+  }
+  
+  # add Group column to compiled data
+  all_data$Group = ifelse(startsWith(basename(all_data$Subject), "1"),
+                          'Non-smoker',
+                          'Smoker')
+  cols = colnames(all_data)
+  new_cols = c('Subject', 'Group', cols[!cols %in% c('Subject', 'Group')])
+  all_data = all_data[, new_cols]
+    
+  # get roi columns
+  rois = colnames(all_data)
+  rois = rois[grepl('NZMean_[0-9]+', rois)]
+  
+  # read the appropriate xml file that has the index & label info
+  if (atlas == 'cort'){
+    atlas_dict = xmlParse(file.path(project, 'HarvardOxford-Cortical.xml'))
+  } else {
+    atlas_dict = xmlParse(file.path(project, 'HarvardOxford-Subcortical.xml'))
+  }
+  
+  # parse the xml file to get the right label for each roi index
+  atlas_dict = xmlRoot(atlas_dict)[2]
+  rois_idx = gsub('NZMean_', '', rois)
+  roi_labels <- c()
+  for (r in rois_idx) {
+    r = as.numeric(r)
+    label = atlas_dict[['data']][r][['label']][['text']]
+    label = xmlValue(label)
+    label = str_replace_all(label, ' ', '_')
+    label = gsub('_$', '', label)
+    label = paste(label, paste0('ROI', r))
+    roi_labels <- c(roi_labels, label)
+  }
+  
+  # count number of subjects per ROI
+  count_data = all_data[, rois]
+  count_data[!is.na(count_data)] = 1
+  count_data[is.na(count_data)] = 0
+  count_data$Group = all_data$Group
+  
+  count_data = count_data %>% 
+    group_by(Group) %>%
+    summarise_each(funs(sum))
+  
+  # give roi labels to the roi columns
+  colnames(count_data) = c('Group', roi_labels)
+  
+  # plot and save the average CEST values for two of the ROIS by group
+  roi_mean = all_data[, c('Group', rois[c(1,2)])]
+  roi_mean[, c('Group', rois[1])] %>%
+    group_by(Group) %>%
+    summarise_each(funs = c(mean, sd)) %>%
+    rename(mean = fn1, sd = fn2) %>%
+    ggplot(aes_string('Group')) +
+    geom_boxplot(aes(lower = mean - abs(sd), 
+                     upper = mean + abs(sd),
+                     middle = mean, 
+                     ymin = mean-3*abs(sd), 
+                     ymax = mean+3*abs(sd)),
+                 stat = 'identity') +
+    ylab('Mean CEST') +
+    ggtitle(paste0(str_replace_all(roi_labels[1], '_', ' '), 
+                ' Mean CEST by Group')) +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5, size = 19),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        axis.text = element_text(size = 15)) 
+  
+  ggsave(file.path(project, 
+                   paste0('mean_cest_by_group_', roi_labels[1], '.png')))
+  
+  roi_mean[, c('Group', rois[2])] %>%
+    group_by(Group) %>%
+    summarise_each(funs = c(mean, sd)) %>%
+    rename(mean = fn1, sd = fn2) %>%
+    ggplot(aes_string('Group')) +
+    geom_boxplot(aes(lower = mean - abs(sd), 
+                     upper = mean + abs(sd),
+                     middle = mean, 
+                     ymin = mean-3*abs(sd), 
+                     ymax = mean+3*abs(sd)),
+                 stat = 'identity') +
+    ylab('Mean CEST') +
+    ggtitle(paste0(str_replace_all(roi_labels[1], '_', ' '), 
+                ' Mean CEST by Group')) +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5, size = 19),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        axis.text = element_text(size = 15)) 
+  
+   ggsave(file.path(project,
+                    paste0('mean_cest_by_group_', roi_labels[2], '.png')))
+   
+  
+  # give roi labels to roi columns in the compiled data
+  roi_cols = colnames(all_data)[3:ncol(all_data)]
+
+  all_data_rois = c()
+  for (raw in roi_cols) {
+    raw_num = gsub('[A-Z]+[a-z]+_', '', raw)
+    for (name in roi_labels) {
+      name_label = gsub(' ROI.*', '', name)
+      name_num = gsub('.* ROI', '', name)
+      if (raw_num == name_num) {
+        raw = gsub('_[0-9]+', '', raw)
+        all_data_rois = c(all_data_rois, 
+                          paste(name_label, raw, paste0('ROI_', name_num)))
+      }
+    }
+  }
+  
+  colnames(all_data)[3:ncol(all_data)] = all_data_rois
+  
+  # also give group column to the table that has average CEST values in atlases
+  avg_cest = file.path(output, paste0('GluCEST-HarvardOxford-',
+                                      atlas, '-measures.tsv'))
+  avg_cest = read_tsv(avg_cest)
+  cols = colnames(avg_cest)
+  avg_cest$Group = ifelse(startsWith(basename(avg_cest$Subject), "1"),
+                          'Non-smoker',
+                          'Smoker')
+  new_cols = c('Subject', 'Group', cols[!cols %in% c('Subject', 'Group')])
+  avg_cest = avg_cest[new_cols]
+  
+  
+  # write compiled table
+  write.csv(all_data, file.path(output, paste0('GluCEST-HarvardOxfordROI-',
+                                               atlas, '-measures.csv')))
+  
+  write.csv(count_data, file.path(output, paste0('GluCEST-HarvardOxfordROI-',
+                                               atlas, '-count.csv')))
+  
+  write.csv(avg_cest, file.path(output, paste0('GluCEST-HarvardOxford-',
+                                      atlas, '-measures.tsv')))
+  
+}
+
+
+```
+
+```{r}
+
+```
+
